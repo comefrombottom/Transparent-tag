@@ -19,19 +19,54 @@ struct Player {
 	bool isWatching;
 	Color color;
 	String name;
+
+	template <class Archive>
+	void SIV3D_SERIALIZE(Archive& archive)
+	{
+		archive(pos, isTransparent, isWatching, color, name);
+	}
 };
 
 class ShareRoomData {
 
 public:
 	ShareRoomData() = default;
-private:
-	HashTable<LocalPlayerID,Player> players;
-	Array<Vec2> traps;
+
+	const HashTable<LocalPlayerID, Player>& players() const {
+		return m_players;
+	}
+
+	const Array<Vec2>& traps() const {
+		return m_traps;
+	}
 
 	void setPlayerPos(LocalPlayerID id, Vec2 pos) {
-		players[id].pos = pos;
+		m_players[id].pos = pos;
 	}
+
+	void addPlayer(LocalPlayerID id, Vec2 pos, Color color, String name) {
+		m_players[id] = Player{ pos,false,false,color,name };
+	}
+
+	void erasePlayer(LocalPlayerID id) {
+		m_players.erase(id);
+	}
+
+	template <class Archive>
+	void SIV3D_SERIALIZE(Archive& archive)
+	{
+		archive(m_players,m_traps);
+	}
+private:
+	HashTable<LocalPlayerID,Player> m_players;
+	Array<Vec2> m_traps;
+};
+
+enum class EventCode {
+	roomDataFromHost,
+	playerAdd,
+	playerErase,
+	playerMove,
 };
 
 class MyNetwork : public Multiplayer_Photon
@@ -44,18 +79,21 @@ public:
 	//Lobby Data
 	TextEditState roomName;
 	void initWhenEnterLobby() {
-		roomName = TextEditState{ U"ルーム" };
+		roomName = TextEditState{ U"room" };
 	}
 	void updateLobby() {
 
-		SimpleGUI::TextBox(roomName, Vec2{ 100,50 }, 200);
-		if (SimpleGUI::Button(U"ルームを作成", Vec2{ 100,100 })) {
-			createRoom(roomName.text + U"#" + ToHex(RandomUint16()), 20);
+		SimpleGUI::TextBox(roomName, Vec2{ 100,20 }, 200);
+		if (SimpleGUI::Button(U"ルームを作成", Vec2{ 100,70 })) {
+			initWhenEnterRoom();
+			//createRoom(roomName.text + U"#" + ToHex(RandomUint16()), 20);
+			createRoom(roomName.text, 20);
 			connectingOrJoining = ConnectingOrJoining::Joining;
 		}
 
 		for(auto [i,roomName] : Indexed(getRoomNameList())){
-			if (SimpleGUI::Button(roomName, Vec2{ 100 + (i%3)*200,150 + (i/3) * 50 })) {
+			if (SimpleGUI::Button(roomName, Vec2{ 100 + (i % 3) * 200,150 + (i / 3) * 50 })) {
+				initWhenEnterRoom();
 				joinRoom(roomName);
 				connectingOrJoining = ConnectingOrJoining::Joining;
 			}
@@ -64,6 +102,7 @@ public:
 	
 
 	//Room Data
+	bool hasRoomData = false;
 	ShareRoomData roomData;
 	P2World world;
 	static constexpr double stepTime = 1.0 / 200.0;
@@ -85,22 +124,60 @@ public:
 	}
 
 	void initWhenEnterRoom() {
+		hasRoomData = false;
 		createWalls();
-		player = world.createCircle(P2Dynamic, Scene::Center(), 15).setFixedRotation(true);
+		player = world.createCircle(P2Dynamic, { 400,300 }, 15).setFixedRotation(true);
 	}
 
 	void updateRoom() {
-		if(SimpleGUI::Button(U"Exit", Vec2{ 700,20 })){
-			leaveRoom();
-		}
+		
 
 		Vec2 inputAxis = Vec2(KeyGroupRight.pressed() - KeyGroupLeft.pressed(), KeyGroupDown.pressed() - KeyGroupUp.pressed());
+		Vec2 prePos = player.getPos();
+		player.setVelocity(inputAxis * 200);
 
+		for (accumulatedTime += Scene::DeltaTime(); accumulatedTime >= stepTime; accumulatedTime -= stepTime) {
+			world.update(stepTime);
+		}
+
+		Vec2 pos = player.getPos();
+		if (prePos != pos) {
+			roomData.setPlayerPos(getLocalPlayerID(), pos);
+			sendEvent(FromEnum(EventCode::playerMove), Serializer<MemoryWriter>{}(pos));
+		}
 	}
 
 	void drawRoom() {
 		for (auto& wall : walls) {
 			wall.draw();
+		}
+
+		for (auto& [id, player] : roomData.players()) {
+
+			if (id == getLocalPlayerID())continue;
+
+			player.pos.asCircle(15).draw(player.color);
+			FontAsset(U"message")(player.name).drawAt(player.pos + Vec2{ 0,-20 }, Palette::Gray);
+		}
+
+		player.draw(Palette::Beige);
+
+
+		if (SimpleGUI::Button(U"Exit", Vec2{ 700,20 })) {
+			leaveRoom();
+		}
+	}
+
+	void joinRoomReturn(LocalPlayerID playerID, int32 errorCode, const String& errorString) {
+		if (errorCode) {
+			if (m_verbose) {
+				Console << U"[ルームへの入室でエラーが発生] " << errorString;
+			}
+			return;
+		}
+
+		if (m_verbose) {
+			Console << U"[ルーム " << getCurrentRoomName() << U" に入室に成功]";
 		}
 	}
 
@@ -129,17 +206,66 @@ public:
 
 	void joinRoomEventAction(const LocalPlayer& newPlayer, [[maybe_unused]] const Array<LocalPlayerID>& playerIDs, const bool isSelf) override {
 		if (isSelf) {
-			initWhenEnterRoom();
+			if (isHost()) {
+				roomData.addPlayer(newPlayer.localID, Vec2{ 400,300 }, RandomColor(), newPlayer.userName);
+			}
+			else {
+			}
 		}
 		else {
+			if (isHost()) {
+				sendEvent(FromEnum(EventCode::roomDataFromHost), Serializer<MemoryWriter>{}(roomData), Array{ newPlayer.localID });
+			}
 		}
 	}
 
 	void leaveRoomEventAction(const LocalPlayerID playerID, [[maybe_unused]] const bool isInactive) override {
-
+		if (isHost()) {
+			roomData.erasePlayer(playerID);
+			sendEvent(FromEnum(EventCode::playerErase), Serializer<MemoryWriter>{}(playerID));
+		}
 	}
 
+	void customEventAction(const LocalPlayerID playerID, const uint8 eventCode, Deserializer<MemoryViewReader>& reader) override
+	{
+		auto eventCodeEnum = ToEnum<EventCode>(eventCode);
+		switch (eventCodeEnum) {
+		case EventCode::roomDataFromHost:
+			assert(not hasRoomData);
+			reader(roomData);
+			hasRoomData = true;
+			Vec2 pos = Vec2{ 400,300 };
+			Color color = RandomColor();
+			roomData.addPlayer(getLocalPlayerID(), pos, color, getUserName());
+			sendEvent(FromEnum(EventCode::playerAdd), Serializer<MemoryWriter>{}(pos, color, getUserName()));
+			break;
+		case EventCode::playerAdd:
+		{
+			if (not hasRoomData) return;
+			Vec2 pos;
+			Color color;
+			String name;
+			reader(pos, color, name);
+			roomData.addPlayer(playerID, pos, color, name);
+		}
+			break;
+		case EventCode::playerErase:
+			if (not hasRoomData) return;
+			roomData.erasePlayer(playerID);
+			break;
+		case EventCode::playerMove:
+		{
+			if (not hasRoomData) return;
+			Vec2 pos;
+			reader(pos);
+			roomData.setPlayerPos(playerID, pos);
+		}
+			break;
+		default:
+			break;
+		}
 
+	}
 };
 
 
@@ -189,13 +315,11 @@ void Main()
 		}
 
 		if (network.isInLobby()) {
-			Print << U"ロビーにいます";
 			network.updateLobby();
 
 		}
 
 		if (network.isInRoom()) {
-			Print << U"ルームにいます";
 			network.updateRoom();
 			network.drawRoom();
 		}
