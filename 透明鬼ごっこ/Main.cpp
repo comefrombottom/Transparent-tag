@@ -167,6 +167,10 @@ public:
 	
 
 	//Room Data
+	static constexpr double playerRadius = 15;
+	static constexpr double observerSearchRadius = 30;
+	static constexpr double observerBodyRadius = 7;
+
 	bool hasRoomData = false;
 	ShareRoomData roomData;
 	P2World world;
@@ -176,6 +180,13 @@ public:
 	P2Body playerBody;
 	Timer tagStoppingTimer;
 	Stopwatch noMovingTime;
+	double observerAccumulatedTime = 0.0;
+	constexpr static double observerStepTime = 10;
+	struct Observer {
+		Vec2 pos;
+		bool isWatching = false;
+	};
+	Array<Observer> observers;
 
 	struct PlayerLocalData {
 		PlayerLocalData() = default;
@@ -183,7 +194,6 @@ public:
 		Vec2 pos;
 		Vec2 velocity{};
 		Timer fadeoutTimer;
-		Array<Vec2> traps;
 	};
 
 	HashTable<LocalPlayerID, PlayerLocalData> playersLocalData;
@@ -217,16 +227,25 @@ public:
 		walls << world.createRect(P2Static, Vec2{ 400,400 }, Size{ 100,100 });
 	}
 
-	void initWhenCreateRoom() {
-		hasRoomData = true;
+	void initRoomData() {
+		hasRoomData = false;
+		roomData = ShareRoomData{};
 		createWalls();
 		playerBody = world.createCircle(P2Dynamic, { 400,300 }, 15).setFixedRotation(true);
+		accumulatedTime = 0.0;
+		observerAccumulatedTime = 0.0;
+		observers.clear();
+		playersLocalData.clear();
+	}
+
+	void initWhenCreateRoom() {
+		initRoomData();
+		hasRoomData = true;
 	}
 
 	void initWhenJoinRoom() {
+		initRoomData();
 		hasRoomData = false;
-		createWalls();
-		playerBody = world.createCircle(P2Dynamic, { 400,300 }, 15).setFixedRotation(true);
 	}
 
 	void updateRoom(double delta = Scene::DeltaTime()) {
@@ -282,12 +301,29 @@ public:
 			for (auto& [id, player] : roomData.players()) {
 				if (id == getLocalPlayerID())continue;
 
-				if (playerBody.getPos().asCircle(15).intersects(playersLocalData.at(id).pos.asCircle(15))) {
+				if (playerBody.getPos().asCircle(playerRadius).intersects(playersLocalData.at(id).pos.asCircle(playerRadius))) {
 					roomData.setItID(id);
 					sendEvent(FromEnum(EventCode::itIDChange), Serializer<MemoryWriter>{}(id));
 
 					tagStoppingTimer.restart(3.0s);
+					observers.clear();
+					observerAccumulatedTime = 0.0;
 					sendEvent(FromEnum(EventCode::tagStop), Serializer<MemoryWriter>{});
+				}
+			}
+		}
+
+		for (observerAccumulatedTime += delta; observerAccumulatedTime >= observerStepTime; observerAccumulatedTime -= observerStepTime) {
+			observers.push_back(Observer{ playerBody.getPos() });
+		}
+
+		for (auto& observer : observers) {
+			observer.isWatching = false;
+			for (auto& [id, player] : roomData.players()) {
+				if (id == getLocalPlayerID())continue;
+
+				if (observer.pos.asCircle(observerSearchRadius).intersects(player.pos.asCircle(playerRadius))) {
+					observer.isWatching = true;
 				}
 			}
 		}
@@ -299,6 +335,16 @@ public:
 		if (not hasRoomData) {
 			FontAsset(U"message")(U"データを受信中...").drawAt(Scene::Center(), Palette::White);
 			return;
+		}
+
+		for (auto& observer : observers) {
+			if (observer.isWatching) {
+				observer.pos.asCircle(observerSearchRadius).draw(ColorF(1, 0.3));
+				observer.pos.asCircle(observerBodyRadius).draw(Palette::Red);
+			}
+			else {
+				observer.pos.asCircle(observerBodyRadius).draw(Palette::Blue);
+			}
 		}
 
 		for (auto& wall : walls) {
@@ -316,7 +362,7 @@ public:
 
 				if (fadeoutAlpha > 0.0) {
 					if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-					pos.asCircle(15).draw(player.color);
+					pos.asCircle(playerRadius).draw(player.color);
 					FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
 				}
 
@@ -324,7 +370,7 @@ public:
 					double alpha = Min((noMovingTime.sF() - 1.0), 0.5);
 					ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
 					if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-					pos.asCircle(15).draw(player.color);
+					pos.asCircle(playerRadius).draw(player.color);
 					FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
 				}
 			}
@@ -333,7 +379,7 @@ public:
 				double fadeoutAlpha = playersLocalData.at(id).fadeoutTimer.progress0_1();
 				ScopedColorMul2D scm{ 1.0,1.0,1.0,fadeoutAlpha };
 				if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-				pos.asCircle(15).draw(player.color);
+				pos.asCircle(playerRadius).draw(player.color);
 				FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
 			}
 		}
@@ -352,13 +398,17 @@ public:
 			playerBody.draw(getPlayer().color);
 			if (noMovingTime > 1s) {
 				Vec2 pos = playerBody.getPos();
-				pos.asCircle(10).draw(Palette::White);
-				pos.asCircle(5).draw(Palette::Black);
+				pos.asCircle(playerRadius*2/3).draw(Palette::White);
+				pos.asCircle(playerRadius * 1 / 3).draw(Palette::Black);
 
 			}
 			FontAsset(U"name")(getPlayer().name).drawAt(playerBody.getPos() + Vec2{ 0,-20 }, ColorF(1.0));
 		}
 		Print << U"TagStoppingTimer:" << tagStoppingTimer.remaining();
+
+		//observerAccumulatedTime Circle
+		Circle{ Scene::Size() - Vec2{40,40},25 }.drawPie(0, observerAccumulatedTime / observerStepTime * Math::TwoPi, Palette::Blue).drawFrame(3,Palette::Gray);
+
 
 		if (SimpleGUI::Button(U"Exit", Vec2{ 700,10 })) {
 			leaveRoom();
@@ -399,7 +449,7 @@ public:
 		}
 		else {
 			if (isHost()) {
-				sendEvent(FromEnum(EventCode::roomDataFromHost), Serializer<MemoryWriter>{}(roomData), Array{ newPlayer.localID });
+				sendEvent(FromEnum(EventCode::roomDataFromHost), Serializer<MemoryWriter>{}(roomData, observerAccumulatedTime), Array{ newPlayer.localID });
 			}
 		}
 	}
@@ -418,7 +468,7 @@ public:
 		case EventCode::roomDataFromHost:
 		{
 			assert(not hasRoomData);
-			reader(roomData);
+			reader(roomData, observerAccumulatedTime);
 			hasRoomData = true;
 			Vec2 pos = Vec2{ 400,300 };
 			Color color = RandomColor();
@@ -479,6 +529,8 @@ public:
 		{
 			if (not hasRoomData) return;
 			tagStoppingTimer.restart(3.0s);
+			observers.clear();
+			observerAccumulatedTime = 0.0;
 		}
 			break;
 		default:
