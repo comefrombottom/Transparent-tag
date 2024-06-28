@@ -8,21 +8,48 @@ InputGroup KeyGroupRight{ KeyRight, KeyD };
 InputGroup KeyGroupUp{ KeyUp, KeyW };
 InputGroup KeyGroupDown{ KeyDown, KeyS };
 
-enum class ConnectingOrJoining {
+enum class NetWorkState {
+	Disconnected,
 	Connecting,
-	Joining
+	InLobby,
+	Joining,
+	InRoom,
+	Leaving,
+	Disconnecting,
 };
+
+[[nodiscard]]
+StringView ToString(NetWorkState state) {
+	switch (state) {
+	case NetWorkState::Disconnected:
+		return U"Disconnected";
+	case NetWorkState::Connecting:
+		return U"Connecting";
+	case NetWorkState::InLobby:
+		return U"InLobby";
+	case NetWorkState::Joining:
+		return U"Joining";
+	case NetWorkState::InRoom:
+		return U"InRoom";
+	case NetWorkState::Leaving:
+		return U"Leaving";
+	case NetWorkState::Disconnecting:
+		return U"Disconnecting";
+	default:
+		return U"Unknown";
+	}
+}
 
 void drawCrown(const Vec2& pos) {
 	constexpr double w = 20;
 	constexpr double h = 15;
-	const Vec2 bottom_left = Vec2{ -w/2,0 };
-	const Vec2 left = Vec2{ -w/2,-h };
-	const Vec2 leftV = Vec2{ -w / 3,-h / 2 };
-	const Vec2 top = Vec2{ 0,-h };
-	const Vec2 rightV = Vec2{ w / 3,-h / 2 };
-	const Vec2 right = Vec2{ w/2,-h };
-	const Vec2 bottom_right =  Vec2{ w/2,0 };
+	constexpr Vec2 bottom_left = Vec2{ -w/2,0 };
+	constexpr Vec2 left = Vec2{ -w/2,-h };
+	constexpr Vec2 leftV = Vec2{ -w / 3,-h / 2 };
+	constexpr Vec2 top = Vec2{ 0,-h };
+	constexpr Vec2 rightV = Vec2{ w / 3,-h / 2 };
+	constexpr Vec2 right = Vec2{ w/2,-h };
+	constexpr Vec2 bottom_right =  Vec2{ w/2,0 };
 	Transformer2D tf{ Mat3x2::Translate(pos) };
 	Polygon{ bottom_left,left,leftV,top,rightV,right,bottom_right }.draw(Palette::Yellow);
 }
@@ -52,10 +79,6 @@ public:
 
 	const HashTable<LocalPlayerID, Player>& players() const {
 		return m_players;
-	}
-
-	const Array<Vec2>& traps() const {
-		return m_traps;
 	}
 
 	const LocalPlayerID itID() const {
@@ -89,11 +112,10 @@ public:
 	template <class Archive>
 	void SIV3D_SERIALIZE(Archive& archive)
 	{
-		archive(m_players,m_traps,m_itID);
+		archive(m_players,m_itID);
 	}
 private:
 	HashTable<LocalPlayerID,Player> m_players;
-	Array<Vec2> m_traps;
 	LocalPlayerID m_itID = 0;
 };
 
@@ -113,7 +135,8 @@ class MyNetwork : public Multiplayer_Photon
 public:
 	using Multiplayer_Photon::Multiplayer_Photon;
 
-	ConnectingOrJoining connectingOrJoining = ConnectingOrJoining::Connecting;
+	NetWorkState state = NetWorkState::Disconnected;
+	bool isFirstConnecting = true;
 
 	//Lobby Data
 	TextEditState roomNameBox;
@@ -128,7 +151,7 @@ public:
 		if (SimpleGUI::Button(U"ルームを作成", Vec2{ 100,70 })) {
 			initWhenCreateRoom();
 			createRoom(roomNameBox.text + U"#" + ToHex(RandomUint16()), 20);
-			connectingOrJoining = ConnectingOrJoining::Joining;
+			state = NetWorkState::Joining;
 		}
 
 		SimpleGUI::TextBox(userNameBox, Vec2{ 580,20 }, 200);
@@ -137,7 +160,7 @@ public:
 			if (SimpleGUI::Button(roomName, Vec2{ 100 + (i % 3) * 200,150 + (i / 3) * 50 })) {
 				initWhenJoinRoom();
 				joinRoom(roomName);
-				connectingOrJoining = ConnectingOrJoining::Joining;
+				state = NetWorkState::Joining;
 			}
 		}
 	}
@@ -160,6 +183,7 @@ public:
 		Vec2 pos;
 		Vec2 velocity{};
 		Timer fadeoutTimer;
+		Array<Vec2> traps;
 	};
 
 	HashTable<LocalPlayerID, PlayerLocalData> playersLocalData;
@@ -338,11 +362,30 @@ public:
 
 		if (SimpleGUI::Button(U"Exit", Vec2{ 700,10 })) {
 			leaveRoom();
+			state = NetWorkState::Leaving;
 		}
+	}
+
+	void connectReturn([[maybe_unused]] const int32 errorCode, const String& errorString, const String& region, [[maybe_unused]] const String& cluster) override
+	{
+		state = NetWorkState::InLobby;
+		isFirstConnecting = false;
+	}
+
+	void disconnectReturn() override
+	{
+		state = NetWorkState::Disconnected;
+	}
+
+	void leaveRoomReturn(int32 errorCode, const String& errorString) override
+	{
+		state = NetWorkState::InLobby;
 	}
 
 	void joinRoomEventAction(const LocalPlayer& newPlayer, [[maybe_unused]] const Array<LocalPlayerID>& playerIDs, const bool isSelf) override {
 		if (isSelf) {
+			state = NetWorkState::InRoom;
+
 			noMovingTime.restart();
 			if (isHost()) {
 
@@ -446,7 +489,6 @@ public:
 };
 
 
-
 void Main()
 {
 	FontAsset::Register(U"message", 30, Typeface::Bold);
@@ -457,12 +499,6 @@ void Main()
 
 	MyNetwork network{ secretAppID, U"1.0", Verbose::No };
 
-
-	//P2Body player = world.createCircle(P2Dynamic, Scene::Center(), 15).setFixedRotation(true);
-
-	bool isFirstConnecting = true;
-
-
 	while (System::Update())
 	{
 		ClearPrint();
@@ -470,38 +506,44 @@ void Main()
 		if(not network.isActive()){
 			network.initWhenEnterLobby();
 			network.connect(U"player", U"jp");
-			network.connectingOrJoining = ConnectingOrJoining::Connecting;
+			network.state = NetWorkState::Connecting;
 		}
 		else {
 			network.update();
 		}
 
-		if (network.isActive() and not network.isInLobbyOrInRoom() and network.connectingOrJoining == ConnectingOrJoining::Connecting) {
-			if (isFirstConnecting) {
+		switch (network.state)
+		{
+		case NetWorkState::Disconnected:
+			break;
+		case NetWorkState::Connecting:
+			if (network.isFirstConnecting) {
 				FontAsset(U"message")(U"接続しています...").drawAt(Scene::Center(), Palette::White);
 			}
 			else {
 				FontAsset(U"message")(U"接続が切れました\n再接続しています...").drawAt(Scene::Center(), Palette::White);
 			}
-		}
-
-		if (network.isActive() and not network.isInLobbyOrInRoom() and network.connectingOrJoining == ConnectingOrJoining::Joining) {
-			FontAsset(U"message")(U"入室中...").drawAt(Scene::Center(), Palette::White);
-		}
-
-		if (isFirstConnecting and network.isInLobbyOrInRoom()) {
-			isFirstConnecting = false;
-		}
-
-		if (network.isInLobby()) {
+			break;
+		case NetWorkState::InLobby:
 			network.updateLobby();
-
-		}
-
-		if (network.isInRoom()) {
+			break;
+		case NetWorkState::Joining:
+			FontAsset(U"message")(U"入室中...").drawAt(Scene::Center(), Palette::White);
+			break;
+		case NetWorkState::InRoom:
 			network.updateRoom();
 			network.drawRoom();
+			break;
+		case NetWorkState::Leaving:
+			FontAsset(U"message")(U"退室中...").drawAt(Scene::Center(), Palette::White);
+			break;
+		case NetWorkState::Disconnecting:
+			FontAsset(U"message")(U"切断中...").drawAt(Scene::Center(), Palette::White);
+			break;
+		default:
+			break;
 		}
+
 	}
 }
 
