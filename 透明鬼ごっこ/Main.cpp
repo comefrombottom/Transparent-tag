@@ -101,6 +101,10 @@ public:
 		m_players.at(id).isTransparent = beTransparent;
 	}
 
+	void beWatching(LocalPlayerID id, bool beWatching) {
+		m_players.at(id).isWatching = beWatching;
+	}
+
 	void setPlayerName(LocalPlayerID id, const String& name) {
 		m_players.at(id).name = name;
 	}
@@ -125,6 +129,7 @@ enum class EventCode:uint8 {
 	playerErase,
 	playerMove,
 	beTransparent,
+	beWatching,
 	playerNameChange,
 	itIDChange,
 	tagStop,
@@ -194,6 +199,7 @@ public:
 		Vec2 pos;
 		Vec2 velocity{};
 		Timer fadeoutTimer;
+		bool isFacingRight = true;
 	};
 
 	HashTable<LocalPlayerID, PlayerLocalData> playersLocalData;
@@ -274,9 +280,13 @@ public:
 			roomData.setPlayerPos(getLocalPlayerID(), pos);
 			sendEvent(FromEnum(EventCode::playerMove), Serializer<MemoryWriter>{}(pos));
 			noMovingTime.restart();
+			roomData.beWatching(getLocalPlayerID(), false);
+			sendEvent(FromEnum(EventCode::beWatching), Serializer<MemoryWriter>{}(false));
 		}
 		if(beTransparent){
 			noMovingTime.restart();
+			roomData.beWatching(getLocalPlayerID(), false);
+			sendEvent(FromEnum(EventCode::beWatching), Serializer<MemoryWriter>{}(false));
 		}
 
 		if (beTransparent != getPlayer().isTransparent) {
@@ -285,11 +295,22 @@ public:
 			sendEvent(FromEnum(EventCode::beTransparent), Serializer<MemoryWriter>{}(beTransparent));
 		}
 
-		for (auto& [id, player] : roomData.players()) {
-			if (id == getLocalPlayerID())continue;
+		if(noMovingTime > 1.0s){
+			roomData.beWatching(getLocalPlayerID(), true);
+			sendEvent(FromEnum(EventCode::beWatching), Serializer<MemoryWriter>{}(true));
+		}
 
+		for (auto& [id, player] : roomData.players()) {
 			if (playersLocalData.contains(id)) {
-				playersLocalData.at(id).pos = Math::SmoothDamp(playersLocalData.at(id).pos, player.pos, playersLocalData.at(id).velocity, 1.0/20, unspecified, delta);
+				Vec2& velocity = playersLocalData.at(id).velocity;
+				playersLocalData.at(id).pos = Math::SmoothDamp(playersLocalData.at(id).pos, player.pos, velocity, 1.0 / 20, unspecified, delta);
+				bool& isFacingRight = playersLocalData.at(id).isFacingRight;
+				if (velocity.x > 0.1) {
+					isFacingRight = true;
+				}
+				else if (velocity.x < -0.1) {
+					isFacingRight = false;
+				}
 			}
 			else {
 				playersLocalData.insert_or_assign(id, PlayerLocalData{ player.pos });
@@ -355,55 +376,62 @@ public:
 
 			if (id == getLocalPlayerID())continue;
 
+			double alpha = 1.0;
 			if (player.isTransparent) {
-				const Vec2& pos = playersLocalData.at(id).pos;
-				double fadeoutAlpha = playersLocalData.at(id).fadeoutTimer.progress1_0();
-				ScopedColorMul2D scm{ 1.0,1.0,1.0,fadeoutAlpha };
-
-				if (fadeoutAlpha > 0.0) {
-					if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-					pos.asCircle(playerRadius).draw(player.color);
-					FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
-				}
-
+				alpha = playersLocalData.at(id).fadeoutTimer.progress1_0();
 				if(noMovingTime > 1.0s){
-					double alpha = Min((noMovingTime.sF() - 1.0), 0.5);
-					ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
-					if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-					pos.asCircle(playerRadius).draw(player.color);
-					FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
+					alpha = Min((noMovingTime.sF() - 1.0), 0.5);
 				}
 			}
 			else {
-				const Vec2& pos = playersLocalData.at(id).pos;
-				double fadeoutAlpha = playersLocalData.at(id).fadeoutTimer.progress0_1();
-				ScopedColorMul2D scm{ 1.0,1.0,1.0,fadeoutAlpha };
-				if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-				pos.asCircle(playerRadius).draw(player.color);
-				FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
+				alpha = playersLocalData.at(id).fadeoutTimer.progress0_1();
 			}
+			const Vec2& pos = playersLocalData.at(id).pos;
+			ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
+			if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
+			pos.asCircle(playerRadius).draw(player.color);
+			if (player.isWatching) {
+				pos.asCircle(playerRadius * 2 / 3).draw(Palette::White);
+				pos.asCircle(playerRadius * 1 / 3).draw(Palette::Black);
+			}
+
+			if(playersLocalData.at(id).isFacingRight){
+				Line{ pos ,pos + Vec2{playerRadius,0} }.draw(2,Palette::White);
+			}
+			else {
+				Line{ pos,pos + Vec2{-playerRadius,0} }.draw(2,Palette::White);
+			}
+
+			FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
 		}
 
-		if (getPlayer().isTransparent) {
-			double fadeoutAlpha = (playersLocalData.at(getLocalPlayerID()).fadeoutTimer.progress1_0() * 0.75 + 0.25);
-			ScopedColorMul2D scm{ 1.0,1.0,1.0,fadeoutAlpha };
-			if (getLocalPlayerID() == roomData.itID())drawCrown(playerBody.getPos() + Vec2(0,-20));
-			playerBody.draw(getPlayer().color);
-			FontAsset(U"name")(getPlayer().name).drawAt(playerBody.getPos() + Vec2{ 0,-20 }, ColorF(1.0));
+		const Player& player = getPlayer();
+		LocalPlayerID id = getLocalPlayerID();
+		double alpha = 1.0;
+		if (player.isTransparent) {
+			alpha = (playersLocalData.at(id).fadeoutTimer.progress1_0() * 0.75 + 0.25);
 		}
 		else {
-			double fadeoutAlpha = (playersLocalData.at(getLocalPlayerID()).fadeoutTimer.progress0_1() * 0.75 + 0.25);
-			ScopedColorMul2D scm{ 1.0,1.0,1.0,fadeoutAlpha };
-			if (getLocalPlayerID() == roomData.itID())drawCrown(playerBody.getPos() + Vec2(0, -20));
-			playerBody.draw(getPlayer().color);
-			if (noMovingTime > 1s) {
-				Vec2 pos = playerBody.getPos();
-				pos.asCircle(playerRadius*2/3).draw(Palette::White);
-				pos.asCircle(playerRadius * 1 / 3).draw(Palette::Black);
-
-			}
-			FontAsset(U"name")(getPlayer().name).drawAt(playerBody.getPos() + Vec2{ 0,-20 }, ColorF(1.0));
+			alpha = (playersLocalData.at(id).fadeoutTimer.progress0_1() * 0.75 + 0.25);
 		}
+		const Vec2& pos = playerBody.getPos();
+		ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
+		if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
+		playerBody.draw(player.color);
+		if (player.isWatching) {
+			pos.asCircle(playerRadius * 2 / 3).draw(Palette::White);
+			pos.asCircle(playerRadius * 1 / 3).draw(Palette::Black);
+		}
+		
+		if (playersLocalData.at(id).isFacingRight) {
+			Line{ pos,pos + Vec2{playerRadius,0} }.draw(2,Palette::White);
+		}
+		else {
+			Line{ pos,pos + Vec2{-playerRadius,0} }.draw(2,Palette::White);
+		}
+
+		FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1.0));
+		
 		Print << U"TagStoppingTimer:" << tagStoppingTimer.remaining();
 
 		//observerAccumulatedTime Circle
@@ -507,6 +535,14 @@ public:
 			reader(beTransparent);
 			roomData.beTransparent(playerID, beTransparent);
 			flipFadeoutTimer(playerID);
+		}
+			break;
+		case EventCode::beWatching:
+		{
+			if (not hasRoomData) return;
+			bool beWatching;
+			reader(beWatching);
+			roomData.beWatching(playerID, beWatching);
 		}
 			break;
 		case EventCode::playerNameChange:
