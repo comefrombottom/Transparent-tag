@@ -231,9 +231,10 @@ public:
 		walls << world.createRect(P2Static, Scene::Rect().leftCenter(), Size{ 100,Scene::Height() });
 		walls << world.createRect(P2Static, Scene::Rect().rightCenter(), Size{ 100,Scene::Height() });
 
-		walls << world.createRect(P2Static, Vec2{ 300,300 }, Size{ 100,100 });
-		walls << world.createRect(P2Static, Vec2{ 500,300 }, Size{ 100,100 });
-		walls << world.createRect(P2Static, Vec2{ 400,400 }, Size{ 100,100 });
+		walls << world.createRect(P2Static, Vec2{ 200,200 }, Size{ 100,100 });
+		walls << world.createRect(P2Static, Vec2{ 600,300 }, Size{ 100,100 }).setAngle(45_deg);
+		walls << world.createRect(P2Static, Vec2{ 250,450 }, Size{ 200,40 });
+		walls << world.createRect(P2Static, Vec2{ 440,250 }, Size{ 40,250 }).setAngle(0_deg);
 	}
 
 	void initRoomData() {
