@@ -127,8 +127,8 @@ Resource(engine/soundfont/GMGSx.sf2.zstdcmp)
 //
 //////////////////////////////////////////////////////
 
-
-
+Resource(image/goast_body.png)
+Resource(image/goast_eye.png)
 /* examples 
 
 	//

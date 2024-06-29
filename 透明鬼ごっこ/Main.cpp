@@ -614,8 +614,8 @@ void Main()
 
 	FontAsset::Register(U"message", 30, Typeface::Bold);
 	FontAsset::Register(U"name", 15, Typeface::Bold);
-	TextureAsset::Register(U"goast_body", U"image/goast_body.png");
-	TextureAsset::Register(U"goast_eye", U"image/goast_eye.png");
+	TextureAsset::Register(U"goast_body", Resource(U"image/goast_body.png"));
+	TextureAsset::Register(U"goast_eye", Resource(U"image/goast_eye.png"));
 
 
 
