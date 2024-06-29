@@ -172,7 +172,7 @@ public:
 	
 
 	//Room Data
-	static constexpr double playerRadius = 15;
+	static constexpr double playerRadius = 20;
 	static constexpr double observerSearchRadius = 30;
 	static constexpr double observerBodyRadius = 7;
 
@@ -195,11 +195,14 @@ public:
 
 	struct PlayerLocalData {
 		PlayerLocalData() = default;
-		PlayerLocalData(const Vec2& pos) : pos(pos) {}
+		PlayerLocalData(const Vec2& pos) : pos(pos) {
+			animationOffset = Random(0.0, 10.0);
+		}
 		Vec2 pos;
 		Vec2 velocity{};
 		Timer fadeoutTimer;
 		bool isFacingRight = true;
+		double animationOffset = 0.0;
 	};
 
 	HashTable<LocalPlayerID, PlayerLocalData> playersLocalData;
@@ -264,6 +267,9 @@ public:
 		Vec2 normalizedInputAxis = inputAxis.setLength(1);
 
 		double speed = beTransparent ? 120 : 200;
+		if (isIt()) {
+			speed *= 1.1;
+		}
 
 		if(tagStoppingTimer.isRunning() and isIt()){
 			speed = 0;
@@ -296,25 +302,23 @@ public:
 		}
 
 		if(noMovingTime > 1.0s){
-			roomData.beWatching(getLocalPlayerID(), true);
-			sendEvent(FromEnum(EventCode::beWatching), Serializer<MemoryWriter>{}(true));
+			if (not getPlayer().isWatching) {
+				roomData.beWatching(getLocalPlayerID(), true);
+				sendEvent(FromEnum(EventCode::beWatching), Serializer<MemoryWriter>{}(true));
+			}
 		}
 
 		for (auto& [id, player] : roomData.players()) {
-			if (playersLocalData.contains(id)) {
-				Vec2& velocity = playersLocalData.at(id).velocity;
-				playersLocalData.at(id).pos = Math::SmoothDamp(playersLocalData.at(id).pos, player.pos, velocity, 1.0 / 20, unspecified, delta);
-				bool& isFacingRight = playersLocalData.at(id).isFacingRight;
-				if (velocity.x > 0.1) {
-					isFacingRight = true;
-				}
-				else if (velocity.x < -0.1) {
-					isFacingRight = false;
-				}
+			Vec2& velocity = playersLocalData.at(id).velocity;
+			playersLocalData.at(id).pos = Math::SmoothDamp(playersLocalData.at(id).pos, player.pos, velocity, 1.0 / 20, unspecified, delta);
+			bool& isFacingRight = playersLocalData.at(id).isFacingRight;
+			if (velocity.x > 10) {
+				isFacingRight = true;
 			}
-			else {
-				playersLocalData.insert_or_assign(id, PlayerLocalData{ player.pos });
+			else if (velocity.x < -10) {
+				isFacingRight = false;
 			}
+			
 		}
 
 
@@ -373,33 +377,37 @@ public:
 		}
 
 		for (auto& [id, player] : roomData.players()) {
-
 			if (id == getLocalPlayerID())continue;
+			const PlayerLocalData& localPlayer = playersLocalData.at(id);
 
 			double alpha = 1.0;
 			if (player.isTransparent) {
-				alpha = playersLocalData.at(id).fadeoutTimer.progress1_0();
+				alpha = localPlayer.fadeoutTimer.progress1_0();
 				if(noMovingTime > 1.0s){
 					alpha = Min((noMovingTime.sF() - 1.0), 0.5);
 				}
 			}
 			else {
-				alpha = playersLocalData.at(id).fadeoutTimer.progress0_1();
+				alpha = localPlayer.fadeoutTimer.progress0_1();
 			}
-			const Vec2& pos = playersLocalData.at(id).pos;
+			if(not isIt() and id != roomData.itID()){
+				alpha = Math::Map(alpha, 0.0, 1.0, 0.5, 1.0);
+			}
+			const Vec2& pos = localPlayer.pos;
 			ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
 			if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-			pos.asCircle(playerRadius).draw(player.color);
-			if (player.isWatching) {
-				pos.asCircle(playerRadius * 2 / 3).draw(Palette::White);
-				pos.asCircle(playerRadius * 1 / 3).draw(Palette::Black);
-			}
+			{
+				ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
+				int32 i = static_cast<int32>((Scene::Time() + localPlayer.animationOffset) / 1.2) % 2;
+				TextureAsset(U"goast_body")(0, 32 * i, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos, player.color);
 
-			if(playersLocalData.at(id).isFacingRight){
-				Line{ pos ,pos + Vec2{playerRadius,0} }.draw(2,Palette::White);
-			}
-			else {
-				Line{ pos,pos + Vec2{-playerRadius,0} }.draw(2,Palette::White);
+				if (player.isWatching) {
+
+					TextureAsset(U"goast_eye")(0, 32 * 2, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
+				}
+				else {
+					TextureAsset(U"goast_eye")(0, 0, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
+				}
 			}
 
 			FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
@@ -407,28 +415,32 @@ public:
 
 		const Player& player = getPlayer();
 		LocalPlayerID id = getLocalPlayerID();
+		const PlayerLocalData& localPlayer = playersLocalData.at(id);
 		double alpha = 1.0;
 		if (player.isTransparent) {
-			alpha = (playersLocalData.at(id).fadeoutTimer.progress1_0() * 0.75 + 0.25);
+			alpha = (localPlayer.fadeoutTimer.progress1_0() * 0.75 + 0.25);
 		}
 		else {
-			alpha = (playersLocalData.at(id).fadeoutTimer.progress0_1() * 0.75 + 0.25);
+			alpha = (localPlayer.fadeoutTimer.progress0_1() * 0.75 + 0.25);
 		}
 		const Vec2& pos = playerBody.getPos();
 		ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
 		if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-		playerBody.draw(player.color);
-		if (player.isWatching) {
-			pos.asCircle(playerRadius * 2 / 3).draw(Palette::White);
-			pos.asCircle(playerRadius * 1 / 3).draw(Palette::Black);
+		{
+			ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
+			int32 i = static_cast<int32>((Scene::Time() + localPlayer.animationOffset) / 1.2) % 2;
+			TextureAsset(U"goast_body")(0,32*i,32,32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos, player.color);
+
+			if (player.isWatching) {
+
+				TextureAsset(U"goast_eye")(0, 32*2, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
+			}
+			else {
+				TextureAsset(U"goast_eye")(0, 0, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
+			}
 		}
+		playerBody.drawFrame(1,player.color);
 		
-		if (playersLocalData.at(id).isFacingRight) {
-			Line{ pos,pos + Vec2{playerRadius,0} }.draw(2,Palette::White);
-		}
-		else {
-			Line{ pos,pos + Vec2{-playerRadius,0} }.draw(2,Palette::White);
-		}
 
 		FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1.0));
 		
@@ -484,7 +496,19 @@ public:
 
 	void leaveRoomEventAction(const LocalPlayerID playerID, [[maybe_unused]] const bool isInactive) override {
 		if (isHost()) {
+
+			if(playerID == roomData.itID()){
+				roomData.setItID(getLocalPlayerID());
+				sendEvent(FromEnum(EventCode::itIDChange), Serializer<MemoryWriter>{}(getLocalPlayerID()));
+
+				tagStoppingTimer.restart(3.0s);
+				observers.clear();
+				observerAccumulatedTime = 0.0;
+				sendEvent(FromEnum(EventCode::tagStop), Serializer<MemoryWriter>{});
+			}
+
 			roomData.erasePlayer(playerID);
+			playersLocalData.erase(playerID);
 			sendEvent(FromEnum(EventCode::playerErase), Serializer<MemoryWriter>{}(playerID));
 		}
 	}
@@ -500,6 +524,9 @@ public:
 			hasRoomData = true;
 			Vec2 pos = Vec2{ 400,300 };
 			Color color = RandomColor();
+			for(auto [id,player] : roomData.players()){
+				playersLocalData.insert_or_assign(id, PlayerLocalData{ player.pos });
+			}
 			roomData.addPlayer(getLocalPlayerID(), pos, color, userNameBox.text);
 			playersLocalData.insert_or_assign(getLocalPlayerID(), PlayerLocalData{ pos });
 			sendEvent(FromEnum(EventCode::playerAdd), Serializer<MemoryWriter>{}(pos, color, userNameBox.text));
@@ -518,7 +545,10 @@ public:
 			break;
 		case EventCode::playerErase:
 			if (not hasRoomData) return;
-			roomData.erasePlayer(playerID);
+			LocalPlayerID erasePlayerID;
+			reader(erasePlayerID);
+			roomData.erasePlayer(erasePlayerID);
+			playersLocalData.erase(erasePlayerID);
 			break;
 		case EventCode::playerMove:
 		{
@@ -579,8 +609,13 @@ public:
 
 void Main()
 {
+	Scene::SetBackground(Palette::Steelblue);
+
 	FontAsset::Register(U"message", 30, Typeface::Bold);
 	FontAsset::Register(U"name", 15, Typeface::Bold);
+	TextureAsset::Register(U"goast_body", U"image/goast_body.png");
+	TextureAsset::Register(U"goast_eye", U"image/goast_eye.png");
+
 
 
 	const std::string secretAppID{ SIV3D_OBFUSCATE(PHOTON_APP_ID) };
