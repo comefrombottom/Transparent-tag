@@ -50,16 +50,16 @@
     <IntDir>$(SolutionDir)Intermediate\$(ProjectName)\Debug\Intermediate\</IntDir>
     <TargetName>$(ProjectName)(debug)</TargetName>
     <LocalDebuggerWorkingDirectory>$(ProjectDir)App</LocalDebuggerWorkingDirectory>
-    <IncludePath>$(SIV3D_0_6_14)\include;$(SIV3D_0_6_14)\include\ThirdParty;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0</IncludePath>
-    <LibraryPath>$(SIV3D_0_6_14)\lib\Windows;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(SIV3D_0_6_15)\include;$(SIV3D_0_6_15)\include\ThirdParty;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0</IncludePath>
+    <LibraryPath>$(SIV3D_0_6_15)\lib\Windows;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(SolutionDir)Intermediate\$(ProjectName)\Release\</OutDir>
     <IntDir>$(SolutionDir)Intermediate\$(ProjectName)\Release\Intermediate\</IntDir>
     <LocalDebuggerWorkingDirectory>$(ProjectDir)App</LocalDebuggerWorkingDirectory>
-    <IncludePath>$(SIV3D_0_6_14)\include;$(SIV3D_0_6_14)\include\ThirdParty;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0</IncludePath>
-    <LibraryPath>$(SIV3D_0_6_14)\lib\Windows;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(SIV3D_0_6_15)\include;$(SIV3D_0_6_15)\include\ThirdParty;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0</IncludePath>
+    <LibraryPath>$(SIV3D_0_6_15)\lib\Windows;C:\Users\user\Downloads\photon-windows-sdk_v5-0-10-0\Photon-Windows-Sdk_v5-0-10-0;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

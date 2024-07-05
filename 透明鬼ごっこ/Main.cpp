@@ -1,4 +1,4 @@
-﻿# include <Siv3D.hpp> // Siv3D v0.6.14
+﻿# include <Siv3D.hpp> // Siv3D v0.6.15
 # include "Multiplayer_Photon.hpp"
 # include "PHOTON_APP_ID.SECRET"
 
@@ -41,7 +41,7 @@ StringView ToString(NetWorkState state) {
 }
 
 void drawCrown(const Vec2& pos) {
-	constexpr double w = 20;
+	/*constexpr double w = 20;
 	constexpr double h = 15;
 	constexpr Vec2 bottom_left = Vec2{ -w/2,0 };
 	constexpr Vec2 left = Vec2{ -w/2,-h };
@@ -51,14 +51,16 @@ void drawCrown(const Vec2& pos) {
 	constexpr Vec2 right = Vec2{ w/2,-h };
 	constexpr Vec2 bottom_right =  Vec2{ w/2,0 };
 	Transformer2D tf{ Mat3x2::Translate(pos) };
-	Polygon{ bottom_left,left,leftV,top,rightV,right,bottom_right }.draw(Palette::Yellow);
+	Polygon{ bottom_left,left,leftV,top,rightV,right,bottom_right }.draw(Palette::Yellow);*/
+	const ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
+	TextureAsset(U"gold_crown").scaled(1).drawAt(pos);
 }
 
 struct Player {
 	Vec2 pos;
 	bool isTransparent = false;
-
 	bool isWatching = false;
+	bool isSlowdown = false;
 	ColorF color;
 	String name;
 
@@ -68,7 +70,18 @@ struct Player {
 	template <class Archive>
 	void SIV3D_SERIALIZE(Archive& archive)
 	{
-		archive(pos, isTransparent, isWatching, color, name);
+		archive(pos, isTransparent, isWatching, isSlowdown, color, name);
+	}
+};
+
+struct Trap {
+	Vec2 pos;
+	LocalPlayerID ownerID;
+	Color color = Palette::White;
+	template <class Archive>
+	void SIV3D_SERIALIZE(Archive& archive)
+	{
+		archive(pos, ownerID, color);
 	}
 };
 
@@ -83,6 +96,10 @@ public:
 
 	const LocalPlayerID itID() const {
 		return m_itID;
+	}
+
+	const HashTable<size_t,Trap>& traps() const {
+		return m_traps;
 	}
 
 	void setPlayerPos(LocalPlayerID id, Vec2 pos) {
@@ -105,6 +122,10 @@ public:
 		m_players.at(id).isWatching = beWatching;
 	}
 
+	void beSlowdown(LocalPlayerID id, bool beSlowdown) {
+		m_players.at(id).isSlowdown = beSlowdown;
+	}
+
 	void setPlayerName(LocalPlayerID id, const String& name) {
 		m_players.at(id).name = name;
 	}
@@ -113,14 +134,40 @@ public:
 		m_itID = id;
 	}
 
+	void addTrap(const Vec2& pos, LocalPlayerID ownerID,const Color& color) {
+		m_traps.insert_or_assign(nextTrapID,Trap{ pos,ownerID,color});
+		nextTrapID++;
+	}
+
+	void eraseTrap(size_t id) {
+		m_traps.erase(id);
+	}
+
+	void eraseTrap(LocalPlayerID ownerID) {
+		for (auto it = m_traps.begin(); it != m_traps.end();) {
+			if (it->second.ownerID == ownerID) {
+				it = m_traps.erase(it);
+			}
+			else {
+				++it;
+			}
+		}
+	}
+
+	void clearTraps() {
+		m_traps.clear();
+	}
+
 	template <class Archive>
 	void SIV3D_SERIALIZE(Archive& archive)
 	{
-		archive(m_players,m_itID);
+		archive(m_players, m_itID, m_traps, nextTrapID);
 	}
 private:
 	HashTable<LocalPlayerID,Player> m_players;
 	LocalPlayerID m_itID = 0;
+	HashTable<size_t,Trap> m_traps;
+	size_t nextTrapID = 0;
 };
 
 enum class EventCode:uint8 {
@@ -130,9 +177,14 @@ enum class EventCode:uint8 {
 	playerMove,
 	beTransparent,
 	beWatching,
+	beSlowdown,
 	playerNameChange,
 	itIDChange,
 	tagStop,
+	addTrap,
+	requestTrappedToHost,
+	solveTrapped,
+	eraseTrap,
 };
 
 class MyNetwork : public Multiplayer_Photon
@@ -173,8 +225,7 @@ public:
 
 	//Room Data
 	static constexpr double playerRadius = 20;
-	static constexpr double observerSearchRadius = 30;
-	static constexpr double observerBodyRadius = 7;
+	static constexpr double trapBodyRadius = 7;
 
 	bool hasRoomData = false;
 	ShareRoomData roomData;
@@ -185,13 +236,11 @@ public:
 	P2Body playerBody;
 	Timer tagStoppingTimer;
 	Stopwatch noMovingTime;
-	double observerAccumulatedTime = 0.0;
-	constexpr static double observerStepTime = 10;
-	struct Observer {
-		Vec2 pos;
-		bool isWatching = false;
-	};
-	Array<Observer> observers;
+	double trapAccumulatedTime = 0.0;
+	constexpr static double trapStepTime = 8;
+	constexpr static Duration slowDownTime = 2.0s;
+
+	Vec2 spawnPos = Vec2{ 400,300 };
 
 	struct PlayerLocalData {
 		PlayerLocalData() = default;
@@ -203,6 +252,7 @@ public:
 		Timer fadeoutTimer;
 		bool isFacingRight = true;
 		double animationOffset = 0.0;
+		Timer slowdownTimer;
 	};
 
 	HashTable<LocalPlayerID, PlayerLocalData> playersLocalData;
@@ -243,8 +293,7 @@ public:
 		createWalls();
 		playerBody = world.createCircle(P2Dynamic, { 400,300 }, 15).setFixedRotation(true);
 		accumulatedTime = 0.0;
-		observerAccumulatedTime = 0.0;
-		observers.clear();
+		trapAccumulatedTime = 0.0;
 		playersLocalData.clear();
 	}
 
@@ -256,6 +305,15 @@ public:
 	void initWhenJoinRoom() {
 		initRoomData();
 		hasRoomData = false;
+	}
+
+	LocalPlayerID hostID() const {
+		for (auto& player : getLocalPlayers()) {
+			if (player.isHost) {
+				return player.localID;
+			}
+		}
+		return 0;
 	}
 
 	void updateRoom(double delta = Scene::DeltaTime()) {
@@ -270,6 +328,10 @@ public:
 		double speed = beTransparent ? 120 : 200;
 		if (isIt()) {
 			speed *= 1.1;
+		}
+
+		if (getPlayer().isSlowdown) {
+			speed *= 0.5;
 		}
 
 		if(tagStoppingTimer.isRunning() and isIt()){
@@ -332,26 +394,34 @@ public:
 					sendEvent(FromEnum(EventCode::itIDChange), Serializer<MemoryWriter>{}(id));
 
 					tagStoppingTimer.restart(3.0s);
-					observers.clear();
-					observerAccumulatedTime = 0.0;
+					roomData.clearTraps();
+					trapAccumulatedTime = 0.0;
 					sendEvent(FromEnum(EventCode::tagStop), Serializer<MemoryWriter>{});
 				}
 			}
 		}
 
-		for (observerAccumulatedTime += delta; observerAccumulatedTime >= observerStepTime; observerAccumulatedTime -= observerStepTime) {
-			observers.push_back(Observer{ playerBody.getPos() });
+		for (trapAccumulatedTime += delta; trapAccumulatedTime >= trapStepTime; trapAccumulatedTime -= trapStepTime) {
+
+			if (getPlayer().isTransparent) continue;
+
+			Color color = HSV(getPlayer().color).withS(0.5);
+			roomData.addTrap(playerBody.getPos(), getLocalPlayerID(), color);
+			sendEvent(FromEnum(EventCode::addTrap), Serializer<MemoryWriter>{}(playerBody.getPos(),color));
 		}
 
-		for (auto& observer : observers) {
-			observer.isWatching = false;
-			for (auto& [id, player] : roomData.players()) {
-				if (id == getLocalPlayerID())continue;
 
-				if (observer.pos.asCircle(observerSearchRadius).intersects(player.pos.asCircle(playerRadius))) {
-					observer.isWatching = true;
-				}
+		for (auto& [trapID,trap] : roomData.traps()) {
+			if (trap.ownerID == getLocalPlayerID())continue;
+			if (playerBody.getPos().asCircle(playerRadius).intersects(trap.pos.asCircle(trapBodyRadius))) {
+
+				sendEvent(FromEnum(EventCode::requestTrappedToHost), Serializer<MemoryWriter>{}(trapID), Array{ hostID() });
 			}
+		}
+
+		if (getPlayer().isSlowdown and not playersLocalData.at(getLocalPlayerID()).slowdownTimer.isRunning()) {
+			roomData.beSlowdown(getLocalPlayerID(), false);
+			sendEvent(FromEnum(EventCode::beSlowdown), Serializer<MemoryWriter>{}(false));
 		}
 
 	}
@@ -363,19 +433,53 @@ public:
 			return;
 		}
 
-		for (auto& observer : observers) {
-			if (observer.isWatching) {
-				observer.pos.asCircle(observerSearchRadius).draw(ColorF(1, 0.3));
-				observer.pos.asCircle(observerBodyRadius).draw(Palette::Red);
-			}
-			else {
-				observer.pos.asCircle(observerBodyRadius).draw(Palette::Blue);
+		{
+			ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
+			TextureAsset(U"boseki").scaled(2).drawAt(spawnPos);
+		}
+		{
+			ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
+			for (auto& [id,trap] : roomData.traps()) {
+				
+				int32 page = static_cast<int32>(Scene::Time() / 0.25) % 4;
+
+				TextureAsset(U"pow")(page % 2 * 32, page / 2 * 32, 32, 32).scaled(2).drawAt(trap.pos, trap.color);
 			}
 		}
+		
 
 		for (auto& wall : walls) {
-			wall.draw();
+			wall.draw(Color{ 79, 79, 79 });
 		}
+
+		auto drawGoast = [&](const Vec2& pos, double alpha,LocalPlayerID id,const Player& player,const PlayerLocalData& localPlayer) {
+			ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
+			{
+				ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
+				int32 i = static_cast<int32>((Scene::Time() + localPlayer.animationOffset) / 1.2) % 2;
+
+				Color color = player.color;
+				if(player.isSlowdown){
+					double t = Periodic::Sine0_1(0.5s, localPlayer.slowdownTimer.sF());
+					color = HSV(color).withV(Math::Map(t, 0, 1, 1, 0.5));
+				}
+
+				TextureAsset(U"goast_body")(0, 32 * i, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos, color);
+
+				if (player.isWatching) {
+
+					TextureAsset(U"goast_eye")(0, 32 * 2, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
+				}
+				else {
+					TextureAsset(U"goast_eye")(0, 0, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
+				}
+			}
+			if (id == roomData.itID())drawCrown(pos + Vec2(0, -30));
+
+			Circle{ pos,playerRadius }.drawFrame(2, Palette::Black);
+
+			FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
+		};
 
 		for (auto& [id, player] : roomData.players()) {
 			if (id == getLocalPlayerID())continue;
@@ -395,23 +499,7 @@ public:
 				alpha = Math::Map(alpha, 0.0, 1.0, 0.5, 1.0);
 			}
 			const Vec2& pos = localPlayer.pos;
-			ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
-			if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-			{
-				ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
-				int32 i = static_cast<int32>((Scene::Time() + localPlayer.animationOffset) / 1.2) % 2;
-				TextureAsset(U"goast_body")(0, 32 * i, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos, player.color);
-
-				if (player.isWatching) {
-
-					TextureAsset(U"goast_eye")(0, 32 * 2, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
-				}
-				else {
-					TextureAsset(U"goast_eye")(0, 0, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
-				}
-			}
-
-			FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
+			drawGoast(pos, alpha, id, player, localPlayer);
 		}
 
 		const Player& player = getPlayer();
@@ -425,30 +513,12 @@ public:
 			alpha = (localPlayer.fadeoutTimer.progress0_1() * 0.75 + 0.25);
 		}
 		const Vec2& pos = playerBody.getPos();
-		ScopedColorMul2D scm{ 1.0,1.0,1.0,alpha };
-		if (id == roomData.itID())drawCrown(pos + Vec2(0, -20));
-		{
-			ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
-			int32 i = static_cast<int32>((Scene::Time() + localPlayer.animationOffset) / 1.2) % 2;
-			TextureAsset(U"goast_body")(0,32*i,32,32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos, player.color);
-
-			if (player.isWatching) {
-
-				TextureAsset(U"goast_eye")(0, 32*2, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
-			}
-			else {
-				TextureAsset(U"goast_eye")(0, 0, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
-			}
-		}
-		playerBody.drawFrame(1,player.color);
-		
-
-		FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1.0));
+		drawGoast(pos, alpha, id, player, localPlayer);
 		
 		Print << U"TagStoppingTimer:" << tagStoppingTimer.remaining();
 
 		//observerAccumulatedTime Circle
-		Circle{ Scene::Size() - Vec2{40,40},25 }.drawPie(0, observerAccumulatedTime / observerStepTime * Math::TwoPi, Palette::Blue).drawFrame(3,Palette::Gray);
+		Circle{ Scene::Size() - Vec2{40,40},25 }.drawPie(0, trapAccumulatedTime / trapStepTime * Math::TwoPi, Palette::Blue).drawFrame(3,Palette::Gray);
 
 
 		if (SimpleGUI::Button(U"Exit", Vec2{ 700,10 })) {
@@ -490,7 +560,7 @@ public:
 		}
 		else {
 			if (isHost()) {
-				sendEvent(FromEnum(EventCode::roomDataFromHost), Serializer<MemoryWriter>{}(roomData, observerAccumulatedTime), Array{ newPlayer.localID });
+				sendEvent(FromEnum(EventCode::roomDataFromHost), Serializer<MemoryWriter>{}(roomData, trapAccumulatedTime), Array{ newPlayer.localID });
 			}
 		}
 	}
@@ -503,13 +573,14 @@ public:
 				sendEvent(FromEnum(EventCode::itIDChange), Serializer<MemoryWriter>{}(getLocalPlayerID()));
 
 				tagStoppingTimer.restart(3.0s);
-				observers.clear();
-				observerAccumulatedTime = 0.0;
+				roomData.clearTraps();
+				trapAccumulatedTime = 0.0;
 				sendEvent(FromEnum(EventCode::tagStop), Serializer<MemoryWriter>{});
 			}
 
 			roomData.erasePlayer(playerID);
 			playersLocalData.erase(playerID);
+			roomData.eraseTrap(playerID);
 			sendEvent(FromEnum(EventCode::playerErase), Serializer<MemoryWriter>{}(playerID));
 		}
 	}
@@ -521,7 +592,7 @@ public:
 		case EventCode::roomDataFromHost:
 		{
 			assert(not hasRoomData);
-			reader(roomData, observerAccumulatedTime);
+			reader(roomData, trapAccumulatedTime);
 			hasRoomData = true;
 			Vec2 pos = Vec2{ 400,300 };
 			Color color = RandomColor();
@@ -550,6 +621,7 @@ public:
 			reader(erasePlayerID);
 			roomData.erasePlayer(erasePlayerID);
 			playersLocalData.erase(erasePlayerID);
+			roomData.eraseTrap(erasePlayerID);
 			break;
 		case EventCode::playerMove:
 		{
@@ -576,6 +648,15 @@ public:
 			roomData.beWatching(playerID, beWatching);
 		}
 			break;
+		case EventCode::beSlowdown:
+		{
+			if (not hasRoomData) return;
+			bool beSlowdown;
+			reader(beSlowdown);
+			roomData.beSlowdown(playerID, beSlowdown);
+			if (beSlowdown)playersLocalData.at(playerID).slowdownTimer.restart(slowDownTime);
+		}
+			break;
 		case EventCode::playerNameChange:
 		{
 			if (not hasRoomData) return;
@@ -596,8 +677,49 @@ public:
 		{
 			if (not hasRoomData) return;
 			tagStoppingTimer.restart(3.0s);
-			observers.clear();
-			observerAccumulatedTime = 0.0;
+			roomData.clearTraps();
+			trapAccumulatedTime = 0.0;
+		}
+			break;
+		case EventCode::addTrap:
+		{
+			if (not hasRoomData) return;
+			Vec2 pos;
+			Color color;
+			reader(pos,color);
+			roomData.addTrap(pos, playerID,color);
+		}
+			break;
+		case EventCode::requestTrappedToHost:
+		{
+			if (not hasRoomData) return;
+
+			if (isHost()) {
+				size_t trapID;
+				reader(trapID);
+				if(roomData.traps().contains(trapID)){
+					roomData.eraseTrap(trapID);
+					sendEvent(FromEnum(EventCode::eraseTrap), Serializer<MemoryWriter>{}(trapID));
+					sendEvent(FromEnum(EventCode::solveTrapped), Serializer<MemoryWriter>{}, Array{ playerID });
+				}
+			}
+		}
+			break;
+		case EventCode::solveTrapped:
+		{
+			if (not hasRoomData) return;
+
+			roomData.beSlowdown(getLocalPlayerID(), true);
+			playersLocalData.at(getLocalPlayerID()).slowdownTimer.restart(slowDownTime);
+			sendEvent(FromEnum(EventCode::beSlowdown), Serializer<MemoryWriter>{}(true));
+		}
+			break;
+		case EventCode::eraseTrap:
+		{
+			if (not hasRoomData) return;
+			size_t trapID;
+			reader(trapID);
+			roomData.eraseTrap(trapID);
 		}
 			break;
 		default:
@@ -610,12 +732,15 @@ public:
 
 void Main()
 {
-	Scene::SetBackground(Palette::Steelblue);
+	Scene::SetBackground(Color{ 66, 57, 36 });
 
 	FontAsset::Register(U"message", 30, Typeface::Bold);
 	FontAsset::Register(U"name", 15, Typeface::Bold);
 	TextureAsset::Register(U"goast_body", Resource(U"image/goast_body.png"));
 	TextureAsset::Register(U"goast_eye", Resource(U"image/goast_eye.png"));
+	TextureAsset::Register(U"gold_crown", Resource(U"image/gold_crown.png"));
+	TextureAsset::Register(U"pow", Resource(U"image/pow.png"));
+	TextureAsset::Register(U"boseki", Resource(U"image/boseki.png"));
 
 
 
