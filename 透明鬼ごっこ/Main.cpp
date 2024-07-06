@@ -237,7 +237,7 @@ public:
 	Timer tagStoppingTimer;
 	Stopwatch noMovingTime;
 	double trapAccumulatedTime = 0.0;
-	constexpr static double trapStepTime = 8;
+	constexpr static double trapStepTime = 5;
 	constexpr static Duration slowDownTime = 2.0s;
 
 	Vec2 spawnPos = Vec2{ 400,300 };
@@ -281,10 +281,10 @@ public:
 		walls << world.createRect(P2Static, Scene::Rect().leftCenter(), Size{ 100,Scene::Height() });
 		walls << world.createRect(P2Static, Scene::Rect().rightCenter(), Size{ 100,Scene::Height() });
 
-		walls << world.createRect(P2Static, Vec2{ 200,200 }, Size{ 100,100 });
-		walls << world.createRect(P2Static, Vec2{ 600,300 }, Size{ 100,100 }).setAngle(45_deg);
-		walls << world.createRect(P2Static, Vec2{ 250,450 }, Size{ 200,40 });
-		walls << world.createRect(P2Static, Vec2{ 440,250 }, Size{ 40,250 }).setAngle(0_deg);
+		walls << world.createRect(P2Static, Vec2{ 200,200 }, Size{ 50,50 });
+		walls << world.createRect(P2Static, Vec2{ 600,300 }, Size{ 50,50 }).setAngle(45_deg);
+		walls << world.createRect(P2Static, Vec2{ 250,450 }, Size{ 150,30 });
+		walls << world.createRect(P2Static, Vec2{ 440,250 }, Size{ 30,200 }).setAngle(0_deg);
 	}
 
 	void initRoomData() {
@@ -319,8 +319,8 @@ public:
 	void updateRoom(double delta = Scene::DeltaTime()) {
 		
 		if(not hasRoomData)return;
-		//Vec2 inputAxis = Vec2(KeyGroupRight.pressed() - KeyGroupLeft.pressed(), KeyGroupDown.pressed() - KeyGroupUp.pressed());
-		Vec2 inputAxis = Vec2(KeyD.pressed() - KeyA.pressed(), KeyS.pressed() - KeyW.pressed());
+		Vec2 inputAxis = Vec2(KeyGroupRight.pressed() - KeyGroupLeft.pressed(), KeyGroupDown.pressed() - KeyGroupUp.pressed());
+		//Vec2 inputAxis = Vec2(KeyD.pressed() - KeyA.pressed(), KeyS.pressed() - KeyW.pressed());
 		bool beTransparent = KeySpace.pressed();
 		Vec2 prePos = playerBody.getPos();
 		Vec2 normalizedInputAxis = inputAxis.setLength(1);
@@ -450,6 +450,7 @@ public:
 
 		for (auto& wall : walls) {
 			wall.draw(Color{ 79, 79, 79 });
+			
 		}
 
 		auto drawGoast = [&](const Vec2& pos, double alpha,LocalPlayerID id,const Player& player,const PlayerLocalData& localPlayer) {
@@ -474,11 +475,12 @@ public:
 					TextureAsset(U"goast_eye")(0, 0, 32, 32).scaled(2).mirrored(localPlayer.isFacingRight).drawAt(pos);
 				}
 			}
-			if (id == roomData.itID())drawCrown(pos + Vec2(0, -30));
+			double x_sign = localPlayer.isFacingRight ? 1 : -1;
+			if (id == roomData.itID())drawCrown(pos + Vec2(x_sign * 3, -30 + Periodic::Sine1_1(2) * 3));
 
-			Circle{ pos,playerRadius }.drawFrame(2, Palette::Black);
+			//Circle{ pos,playerRadius }.drawFrame(2, Palette::Black);
 
-			FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,-20 }, ColorF(1));
+			FontAsset(U"name")(player.name).drawAt(pos + Vec2{ 0,30 }, ColorF(1));
 		};
 
 		for (auto& [id, player] : roomData.players()) {
@@ -515,11 +517,25 @@ public:
 		const Vec2& pos = playerBody.getPos();
 		drawGoast(pos, alpha, id, player, localPlayer);
 		
-		Print << U"TagStoppingTimer:" << tagStoppingTimer.remaining();
+		if(tagStoppingTimer.isRunning()){
+			FontAsset(U"message")(U"鬼ごっこ再開まで…", tagStoppingTimer.s_ceil(), U"秒").drawAt(Vec2{ 400,550 }, Palette::White);
+		}
 
 		//observerAccumulatedTime Circle
-		Circle{ Scene::Size() - Vec2{40,40},25 }.drawPie(0, trapAccumulatedTime / trapStepTime * Math::TwoPi, Palette::Blue).drawFrame(3,Palette::Gray);
+		Circle trapAccumulatedCircle{ Scene::Size() - Vec2{40,40},25 };
+		trapAccumulatedCircle.draw(Palette::Dimgray);
+		{
+			ScopedRenderStates2D sampler{ SamplerState::ClampNearest };
+			int32 page = static_cast<int32>(Scene::Time() / 0.25) % 4;
 
+			TextureAsset(U"pow")(page % 2 * 32, page / 2 * 32, 32, 32).scaled(2).drawAt(trapAccumulatedCircle.center, HSV(player.color).withS(0.5));
+		}
+		trapAccumulatedCircle.drawPie(0, trapAccumulatedTime / trapStepTime * Math::TwoPi, ColorF(1, 0.3)).drawFrame(3, Palette::Gray);
+		if (player.isTransparent) {
+			trapAccumulatedCircle.drawFrame(3, Palette::Red);
+			Vec2 dir = Circular{ trapAccumulatedCircle.r, 45_deg };
+			Line{ trapAccumulatedCircle.center - dir,trapAccumulatedCircle.center + dir }.draw(3, Palette::Red);
+		}
 
 		if (SimpleGUI::Button(U"Exit", Vec2{ 700,10 })) {
 			leaveRoom();
