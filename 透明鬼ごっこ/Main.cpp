@@ -762,7 +762,7 @@ void Main()
 
 	const std::string secretAppID{ SIV3D_OBFUSCATE(PHOTON_APP_ID) };
 
-	MyNetwork network{ secretAppID, U"1.0", Verbose::No };
+	MyNetwork network{ secretAppID, U"1.1", Verbose::No };
 
 	while (System::Update())
 	{
